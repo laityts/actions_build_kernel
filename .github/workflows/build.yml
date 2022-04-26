@@ -1,0 +1,200 @@
+# This is a basic workflow to help you get started with Actions
+
+name: build
+
+# Controls when the workflow will run
+on:
+  workflow_dispatch:
+     inputs:
+       source:
+         description: 'Kernel Source'
+         required: true
+         default: 'https://github.com/laityts/android_kernel_xiaomi_msm8953'
+       branch:
+         description: 'Kernel Branch'
+         required: true
+         default: 'lychee'
+       code:
+         description: 'Device Code'
+         required: true
+         default: 'tiffany'
+       defconfig:
+         description: 'DEFCONFIG'
+         required: true
+         default: 'tiffany_defconfig'
+       name:
+         description: 'KERNEL NAME'
+         required: true
+         default: 'Lychee'
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  # This workflow contains a single job called "build"
+  build:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+    env:
+      WORK_DIR: /home/runner/work/actions_build_kernel/actions_build_kernel
+      CHATID: ${{ secrets.CHATID }}
+      token: ${{ secrets.TELEGRAM_TOKEN }}
+      KERNEL_DIR: /home/runner/work/actions_build_kernel/actions_build_kernel/${{ github.event.inputs.code }}
+      IMG_DIR: /home/runner/work/actions_build_kernel/actions_build_kernel/${{ github.event.inputs.code }}/out/arch/arm64/boot
+      DEFCONFIG: ${{ github.event.inputs.defconfig }}
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
+      - uses: actions/checkout@v3
+
+      - name: Initializing the environment 
+        run: |
+          echo "Initialization"
+          sudo apt-get update -y
+          sudo apt-get install -y  bc bison build-essential ccache curl flex git gnupg gperf liblz4-tool libncurses5 libncurses-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python imagemagick libbz2-dev libssl-dev lzma ncftp bash-completion jq sshpass ssh
+
+      - id: env
+        name: ENV
+        run: |
+          git clone --quiet --depth=1 -b ${{ github.event.inputs.branch }} ${{ github.event.inputs.source }} ${{ github.event.inputs.code }} > /dev/null
+          git clone --quiet --depth=1 https://github.com/kdrag0n/proton-clang.git proton-clang > /dev/null
+          ls
+          echo "WORK_DIR: $WORK_DIR"
+          echo "CHATID: $CHATID"
+          echo "token: $token"
+          echo "DEFCONFIG: $DEFCONFIG"
+          echo "KERNEL_DIR: $KERNEL_DIR"
+          echo "IMG_DIR: $IMG_DIR"
+
+      - id: treble
+        name: Build TREBLE kernel
+        run: |
+          echo "build"
+          DATE="$(TZ=Asia/Shanghai date +"%Y%m%d-%H%M")"
+          echo "::set-output name=date::${DATE}"
+          KERNEL_NAME=${{ github.event.inputs.name }}-${{ github.event.inputs.code }}-"$DATE"-Treble
+          ZIP_NAME="$KERNEL_NAME".zip
+          echo "::set-output name=filename::${KERNEL_NAME}"
+          echo "::set-output name=fullname::${ZIP_NAME}"
+          PATH=$WORK_DIR/proton-clang/bin/:$PATH
+          cd ${{ github.event.inputs.code }}
+          echo -e "Kernel compilation starting"
+          BUILD_START=$(date +"%s")
+          export ARCH=arm64
+          export SUBARCH=arm64
+          make O=out "$DEFCONFIG"
+          make -j$(nproc --all) O=out\
+              CC=clang \
+              CROSS_COMPILE=aarch64-linux-gnu- \
+              CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          BUILD_END=$(date +"%s")
+          DIFF=$((BUILD_END - BUILD_START))
+          if [ -f "$IMG_DIR"/Image.gz-dtb ]; then
+              echo -e "Kernel successfully compiled"
+              curl -s -X POST https://api.telegram.org/bot${token}/sendMessage -d text="<b>Build Complete :  $((DIFF / 60)) minute(s) and $((DIFF % 60)) seconds</b>" -d chat_id=${CHATID} -d parse_mode=HTML
+          elif ! [ -f "$IMG_DIR"/Image.gz-dtb ]; then
+              echo -e "Kernel compilation failed"
+              curl -s -X POST https://api.telegram.org/bot${token}/sendMessage -d text="<b>Build failed to compile after $((DIFF / 60)) minute(s) and $((DIFF % 60)) seconds</b>" -d chat_id=${CHATID} -d parse_mode=HTML
+              exit 1
+          fi
+          mv "$IMG_DIR"/Image.gz-dtb $WORK_DIR/AnyKernel3/Image.gz-dtb
+          cd $WORK_DIR/AnyKernel3
+          zip -r9 "$ZIP_NAME" * -x .git README.md *.zip
+          curl -s https://api.telegram.org/bot${token}/sendDocument -F document=@"$ZIP_NAME" -F chat_id=${CHATID}
+          cd $WORK_DIR
+          sshpass -p "${{ secrets.PASSWD }}" scp -o StrictHostKeyChecking=no -o ConnectTimeout=180 AnyKernel3/$ZIP_NAME laityts@frs.sourceforge.net:/home/frs/project/${{ github.event.inputs.code }}/${{ github.event.inputs.name }}/Treble/$ZIP_NAME
+          mv AnyKernel3/$ZIP_NAME $WORK_DIR/
+          echo "Download Link: https://sourceforge.net/projects/${{ github.event.inputs.code }}/files/${{ github.event.inputs.name }}/Treble/$ZIP_NAME/download"
+          treble="https://sourceforge.net/projects/${{ github.event.inputs.code }}/files/${{ github.event.inputs.name }}/Treble/$ZIP_NAME/download"
+          echo "::set-output name=treble::${treble}"
+
+      - id: nontreble
+        name: Build Non-TREBLE kernel
+        run: |
+          echo "build"
+          DATE="$(TZ=Asia/Shanghai date +"%Y%m%d-%H%M")"
+          KERNEL_NAME=${{ github.event.inputs.name }}-${{ github.event.inputs.code }}-"$DATE"-NonTreble
+          ZIP_NAME="$KERNEL_NAME".zip
+          echo "::set-output name=filename::${KERNEL_NAME}"
+          echo "::set-output name=fullname::${ZIP_NAME}"
+          PATH=$WORK_DIR/proton-clang/bin/:$PATH
+          cd ${{ github.event.inputs.code }}
+          dtsi="arch/arm64/boot/dts/qcom/tiffany/msm8953-tiffany.dtsi"
+          sed -i '/cust/ { N; s/$/\					status = "disable";/; }' $dtsi
+          sed -i '/cust/d' $dtsi
+          grep -A 13 'fstab' $dtsi
+          echo -e "Kernel compilation starting"
+          BUILD_START=$(date +"%s")
+          export ARCH=arm64
+          export SUBARCH=arm64
+          make clean && make mrproper
+          rm -rf out
+          make O=out "$DEFCONFIG"
+          make -j$(nproc --all) O=out\
+              CC=clang \
+              CROSS_COMPILE=aarch64-linux-gnu- \
+              CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          BUILD_END=$(date +"%s")
+          DIFF=$((BUILD_END - BUILD_START))
+          if [ -f "$IMG_DIR"/Image.gz-dtb ]; then
+              echo -e "Kernel successfully compiled"
+              curl -s -X POST https://api.telegram.org/bot${token}/sendMessage -d text="<b>Build Complete :  $((DIFF / 60)) minute(s) and $((DIFF % 60)) seconds</b>" -d chat_id=${CHATID} -d parse_mode=HTML
+          elif ! [ -f "$IMG_DIR"/Image.gz-dtb ]; then
+              echo -e "Kernel compilation failed"
+              curl -s -X POST https://api.telegram.org/bot${token}/sendMessage -d text="<b>Build failed to compile after $((DIFF / 60)) minute(s) and $((DIFF % 60)) seconds</b>" -d chat_id=${CHATID} -d parse_mode=HTML
+              exit 1
+          fi
+          mv "$IMG_DIR"/Image.gz-dtb $WORK_DIR/AnyKernel3/Image.gz-dtb
+          cd $WORK_DIR/AnyKernel3
+          zip -r9 "$ZIP_NAME" * -x .git README.md *.zip
+          curl -s https://api.telegram.org/bot${token}/sendDocument -F document=@"$ZIP_NAME" -F chat_id=${CHATID}
+          cd $WORK_DIR
+          sshpass -p "${{ secrets.PASSWD }}" scp -o StrictHostKeyChecking=no -o ConnectTimeout=180 AnyKernel3/$ZIP_NAME laityts@frs.sourceforge.net:/home/frs/project/${{ github.event.inputs.code }}/${{ github.event.inputs.name }}/NonTreble/$ZIP_NAME
+          mv AnyKernel3/$ZIP_NAME $WORK_DIR/
+          echo "Download Link: https://sourceforge.net/projects/${{ github.event.inputs.code }}/files/${{ github.event.inputs.name }}/NonTreble/$ZIP_NAME/download"
+          nontreble="https://sourceforge.net/projects/${{ github.event.inputs.code }}/files/${{ github.event.inputs.name }}/NonTreble/$ZIP_NAME/download"
+          echo "::set-output name=nontreble::${nontreble}"
+          ls
+
+      - name: Telegram Notification
+        run: |
+          DATE="$(TZ=Asia/Beijing date +%d/%m/%Y)"
+          TELEGRAM_FOLDER="$GITHUB_WORKSPACE"/telegram
+          if ! [ -d "${TELEGRAM_FOLDER}" ]; then
+              git clone https://github.com/laityts/telegram.sh/ "${TELEGRAM_FOLDER}"
+          fi
+          TELEGRAM="${TELEGRAM_FOLDER}"/telegram
+          tg_pub() {
+              "${TELEGRAM}" -t "${{ secrets.TELEGRAM_TOKEN }}" -c "${{ secrets.CHATID }}" -M \
+              "$(
+                             for POST in "${@}"; do
+                                      echo "${POST}"
+                             done
+              )"
+          }
+          tg_pub "#KERNEL #${{ github.event.inputs.name }} #${{ github.event.inputs.code }} #Q #R #S" \
+                  "${{ github.event.inputs.name }} Kernel | Android 10/11/12" \
+                  "Updated: _${DATE}_" \
+                  "  " \
+                  "Downloads:" \
+                  " - ️[Treble](${{ steps.treble.outputs.treble }})" \
+                  " - [NonTreble](${{ steps.nontreble.outputs.nontreble }})" \
+                  " " \
+                  "Kernel Features:" \
+                  " - [Here](https://telegra.ph/Lychee-Kernel-04-29)" \
+                  " " \
+                  "Changelog:" \
+                  " \* Merged latest v4.9.311 Kernel and latest CAF Tag" \
+                  " \* Update prima driver to LA.UM.9.6.4.r1-02200-89xx.QSSI12.0"
+
+      - name: Upload to Release
+        uses: softprops/action-gh-release@v1
+        timeout-minutes: 5
+        with:
+          files: |
+            ${{ steps.treble.outputs.fullname }}
+            ${{ steps.nontreble.outputs.fullname }}
+          name: ${{ github.event.inputs.name }}-${{ github.event.inputs.code }}-${{ steps.treble.outputs.date }}
+          tag_name: ${{ github.run_id }}
+          body: LYCHEE
+        env:
+          GITHUB_TOKEN: ${{ secrets.KERNEL }}
