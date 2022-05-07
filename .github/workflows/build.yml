@@ -18,6 +18,10 @@ on:
          description: 'Device Code'
          required: true
          default: 'tiffany'
+       path:
+         description: 'DefConfig Path'
+         required: true
+         default: 'arch/arm64/configs'
        defconfig:
          description: 'DEFCONFIG'
          required: true
@@ -34,6 +38,10 @@ on:
          description: 'E-Mail'
          required: true
          default: 'laityts@gmail.com'
+       version:
+         description: 'Kernel Version'
+         required: true
+         default: 'LycheeKernel-V1.1'
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
 jobs:
@@ -91,6 +99,11 @@ jobs:
           git fetch ${{ github.event.inputs.source }} snow
           git merge FETCH_HEAD --no-edit
           git push origin ${{ github.event.inputs.branch }}
+          sed -i 's/LycheeKernel-V[[:digit:]].[[:digit:]]/${{ github.event.inputs.version }}/g' ${{ github.event.inputs.path }}/${{ github.event.inputs.defconfig }}
+          grep "CONFIG_LOCALVERSION" ${{ github.event.inputs.path }}/${{ github.event.inputs.defconfig }}
+          git add .
+          git commit -m "ARM64/configs: ${{ github.event.inputs.version }}"
+          git push origin ${{ github.event.inputs.branch }}
           cd ..
 
       - id: env
@@ -136,8 +149,11 @@ jobs:
               curl -s -X POST https://api.telegram.org/bot${token}/sendMessage -d text="<b>Build failed to compile after $((DIFF / 60)) minute(s) and $((DIFF % 60)) seconds</b>" -d chat_id=${CHATID} -d parse_mode=HTML
               exit 1
           fi
-          mv "$IMG_DIR"/Image.gz-dtb $WORK_DIR/AnyKernel3/Image.gz-dtb
+          cp "$IMG_DIR"/Image.gz-dtb $WORK_DIR/AnyKernel3/Image.gz-dtb
           cd $WORK_DIR/AnyKernel3
+          echo "**************************************"
+          ls -al
+          echo "**************************************"
           zip -r9 "$ZIP_NAME" * -x .git README.md *.zip
           curl -s https://api.telegram.org/bot${token}/sendDocument -F document=@"$ZIP_NAME" -F chat_id=${CHATID}
           cd $WORK_DIR
@@ -151,40 +167,46 @@ jobs:
         name: Build Non-TREBLE kernel
         run: |
           echo "build"
-          DATE="$(TZ=Asia/Shanghai date +"%Y%m%d-%H%M")"
-          KERNEL_NAME=${{ github.event.inputs.name }}-${{ github.event.inputs.code }}-"$DATE"-NonTreble
+          KERNEL_NAME=${{ github.event.inputs.name }}-${{ github.event.inputs.code }}-${{ steps.treble.outputs.date }}-NonTreble
           ZIP_NAME="$KERNEL_NAME".zip
           echo "::set-output name=filename::${KERNEL_NAME}"
           echo "::set-output name=fullname::${ZIP_NAME}"
-          PATH=$WORK_DIR/proton-clang/bin/:$PATH
-          cd ${{ github.event.inputs.code }}
-          dtsi="arch/arm64/boot/dts/qcom/tiffany/msm8953-tiffany.dtsi"
-          sed -i '/cust/ { N; s/$/\					status = "disable";/; }' $dtsi
-          sed -i '/cust/d' $dtsi
-          grep -A 13 'fstab' $dtsi
-          echo -e "Kernel compilation starting"
-          BUILD_START=$(date +"%s")
-          export ARCH=arm64
-          export SUBARCH=arm64
-          make clean && make mrproper
-          rm -rf out
-          make O=out "$DEFCONFIG"
-          make -j$(nproc --all) O=out\
-              CC=clang \
-              CROSS_COMPILE=aarch64-linux-gnu- \
-              CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-          BUILD_END=$(date +"%s")
-          DIFF=$((BUILD_END - BUILD_START))
-          if [ -f "$IMG_DIR"/Image.gz-dtb ]; then
-              echo -e "Kernel successfully compiled"
-              curl -s -X POST https://api.telegram.org/bot${token}/sendMessage -d text="<b>Build Complete :  $((DIFF / 60)) minute(s) and $((DIFF % 60)) seconds</b>" -d chat_id=${CHATID} -d parse_mode=HTML
-          elif ! [ -f "$IMG_DIR"/Image.gz-dtb ]; then
-              echo -e "Kernel compilation failed"
-              curl -s -X POST https://api.telegram.org/bot${token}/sendMessage -d text="<b>Build failed to compile after $((DIFF / 60)) minute(s) and $((DIFF % 60)) seconds</b>" -d chat_id=${CHATID} -d parse_mode=HTML
-              exit 1
-          fi
-          mv "$IMG_DIR"/Image.gz-dtb $WORK_DIR/AnyKernel3/Image.gz-dtb
+          echo "**************************************"
+          ls -al
+          echo "**************************************"
+          mkdir tmp
+          mv $IMG_DIR/Image.gz-dtb tmp/Image.gz-dtb
+          cd tmp
+          ../split-appended-dtb Image.gz-dtb || true
+          rm Image.gz-dtb
+          for i in `find *.dtb`; do
+            if [[ ! -z "$(../fdtget $i /firmware/android/fstab -p 2>/dev/null || true)" ]]; then
+                echo "**************************************"
+                ../magiskboot dtb $i print -f
+                echo "**************************************"
+                ../fdtput $i /firmware/android/fstab/system dev /dev/block/platform/soc/7824900.sdhci/by-name/system -ts
+                ../fdtput $i /firmware/android/fstab/system status ok -ts
+                ../fdtput $i /firmware/android/fstab/vendor dev /dev/block/platform/soc/7824900.sdhci/by-name/vendor -ts
+                ../fdtput $i /firmware/android/fstab/vendor status disable -ts
+                echo "**************************************"
+                ../magiskboot dtb $i print -f
+            fi
+          done
+          echo "**************************************"
+          ls -al
+          echo "**************************************"
+          cat kernel *.dtb > Image.gz-dtb
+          rm -f *.dtb
+          rm -f kernel
+          echo "**************************************"
+          ls -al
+          echo "**************************************"
+          cd ..
+          mv tmp/Image.gz-dtb $WORK_DIR/AnyKernel3/Image.gz-dtb
           cd $WORK_DIR/AnyKernel3
+          echo "**************************************"
+          ls -al
+          echo "**************************************"
           zip -r9 "$ZIP_NAME" * -x .git README.md *.zip
           curl -s https://api.telegram.org/bot${token}/sendDocument -F document=@"$ZIP_NAME" -F chat_id=${CHATID}
           cd $WORK_DIR
@@ -223,8 +245,8 @@ jobs:
                   " - [Here](https://telegra.ph/Lychee-Kernel-04-29)" \
                   " " \
                   "Changelog:" \
-                  " \* Merged latest v4.9.311 Kernel and latest CAF Tag" \
-                  " \* Update prima driver to LA.UM.9.6.4.r1-02200-89xx.QSSI12.0"
+                  " \* Upstreamed kernel to v4.9.312" \
+                  " "
 
       - name: Upload to Release
         uses: softprops/action-gh-release@v1
